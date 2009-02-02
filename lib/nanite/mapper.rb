@@ -191,15 +191,15 @@ module Nanite
 
     def setup_queues
       agent.log.debug "setting up queues"
-      amq.queue("heartbeat#{@identity}", :exclusive => true).bind(amq.fanout('heartbeat')).subscribe{ |ping|
+      amq.queue("heartbeat-#{agent.identity}", :exclusive => true).bind(amq.fanout('heartbeat')).subscribe{ |ping|
         agent.log.debug "Got heartbeat"
         handle_ping(agent.load_packet(ping))
       }
-      amq.queue("mapper#{@identity}", :exclusive => true).bind(amq.fanout('registration')).subscribe{ |msg|
+      amq.queue("registration-#{agent.identity}", :exclusive => true).bind(amq.fanout('registration')).subscribe{ |msg|
         agent.log.debug "Got registration"
         register(agent.load_packet(msg))
       }
-      amq.queue(agent.identity, :exclusive => true).subscribe{ |msg|
+      amq.queue(agent.identity, :exclusive => true).bind(amq.fanout(agent.identity)).subscribe{ |msg|
         msg = agent.load_packet(msg)
         agent.log.debug "Got a message: #{msg.inspect}"
         agent.reducer.handle_result(msg)
