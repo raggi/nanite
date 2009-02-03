@@ -92,7 +92,7 @@ module Nanite
       @log_dir           = opts[:log_dir]
       @format            = opts[:format] || :marshal
       @identity          = "#{opts[:mapper] ? 'mapper' : 'nanite'}-#{opts[:identity] || Nanite.gensym}"
-      @host              = opts[:host] || '0.0.0.0'
+      @host              = opts[:host] || '127.0.0.1'
       @vhost             = opts[:vhost]
       @file_root         = opts[:file_root] || "#{root}/files"
       @ping_time         = (opts[:ping_time] || 15).to_i
@@ -114,31 +114,11 @@ module Nanite
     #
     # See +Nanite::Agent.start+ documentation for more details.
     def start
-      daemonize(opts[:log_file] || "#{identity}.log") if opts[:daemonize]
-
-      AMQP.start :user  => opts[:user],
-        :pass  => opts[:pass],
-        :vhost => vhost,
-        :host  => host,
-        :port  => (opts[:port] || ::AMQP::PORT).to_i
-
-      if opts[:mapper]
-        log.debug "starting mapper"
-        mapper.start
+      if opts[:daemonize]
+        daemonize(opts[:log_file] || "#{identity}.log")
       else
-        log.debug "starting nanite"
-        load_actors
-        advertise_services
-
-        EM.add_periodic_timer(ping_time) do
-          send_ping
-        end
-
-        amq.queue("nanite.offline").subscribe{ |msg| dispatch_message(msg) }
-        amq.queue(identity, :exclusive => true).subscribe{ |msg| dispatch_message(msg) }
+        runtime
       end
-
-      start_console if opts[:console] && !opts[:daemonize]
     end
     
     def dispatch_message(msg)
@@ -214,22 +194,85 @@ module Nanite
 
     # Returns a logger instance used by the agent.
     def log
-      @log ||= begin
-                 log = Logger.new((log_dir||root||Dir.pwd) / "nanite.#{identity}.log")
-                 log.level = log_level
-                 log
-               end
-      @log
+      @log ||= 
+      begin
+        log = Logger.new((log_dir||root||Dir.pwd) / "nanite.#{identity}.log")
+        log.level = log_level
+        log
+      end
     end
 
     protected
     def daemonize(log_file)
+      redirect_stdio(log_file)
+      # TODO posix platform daemons generally are expected to chdir to root
+      # in order to avoid having their working directory unmounted.
+      case RUBY_PLATFORM
+      when /mswin|mingw/
+        require 'ruby_service_helper'
+        RubyServiceHelper.service = lambda do
+          log.info 'running as a windows service'
+          runtime
+        end
+        # TODO Not sure if nanite has any real run-down infrastructure yet
+        RubyServiceHelper.shutdown = lambda { EM.stop }
+        # This will trigger the service callback once the win32 service
+        # infrastructure is up and running.
+        log.info 'handing off to the service helper'
+        RubyServiceHelper.start
+      else
+        daemonize_posix
+        runtime
+      end
+    end
+
+    def daemonize_posix(log_file)
       exit if fork
       Process.setsid
       exit if fork
-      $stdin.reopen("/dev/null")
+    end
+
+    def redirect_stdio(log_file)
+      $stdin.reopen(null_file)
       $stdout.reopen(log_file, "a")
       $stderr.reopen($stdout)
+    end
+
+    def null_file
+      case RUBY_PLATFORM
+      when /mswin|mingw/
+        'NUL:'
+      else
+        '/dev/null'
+      end
+    end
+
+    def runtime
+      EM.run do
+        AMQP.start :user  => opts[:user],
+          :pass  => opts[:pass],
+          :vhost => vhost,
+          :host  => host,
+          :port  => (opts[:port] || ::AMQP::PORT).to_i
+
+        if opts[:mapper]
+          log.debug "starting mapper"
+          mapper.start
+        else
+          log.debug "starting nanite"
+          load_actors
+          advertise_services
+
+          EM.add_periodic_timer(ping_time) do
+            send_ping
+          end
+
+          amq.queue("nanite.offline").subscribe{ |msg| dispatch_message(msg) }
+          amq.queue(identity, :exclusive => true).subscribe{ |msg| dispatch_message(msg) }
+        end
+
+        start_console if opts[:console] && !opts[:daemonize]
+      end
     end
   end
 end

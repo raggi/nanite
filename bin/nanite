@@ -83,6 +83,4 @@ end
 
 opts.parse!
 
-EM.run {
-  Nanite.start options
-}
+Nanite.start options
